@@ -3,17 +3,21 @@
 *A handoff for later. The app is complete and deployed; nothing here is required. Two independent tracks: polish the app, and use the repo as a CI/CD sandbox.*
 
 **Where things stand**
-- Live at `https://euchre-tournament-dd9a4.web.app`, deployed from a single static `index.html`.
-- Full arc works: Google host sign-in, sign-up lobby (code + join link), seeded/validated rotation with robots, live scoring, standings, results with the KLASK Champion badge, end-early, CSV/JSON export, a cloud archive that follows your login, and 18 imported historical events.
-- Code is on GitHub. Deploys are currently **manual** (`firebase deploy`) — which is exactly what makes it a good CI/CD sandbox.
-- Security model: no player accounts (join by code); host is identity-based; Firestore rules enforce that only the owner can change structure, while anyone with a code can check in and enter scores.
-- **Open item:** the host archive occasionally threw `permission-denied` (a token-timing race, worst on Back-navigation). Patched with auth-ready waits, backoff retries, a Retry button, and dropping the multi-tab cache — awaiting one real-world confirmation. The "public archive" task below is expected to resolve this at the root and let us delete that retry scaffolding.
+- Live at `https://euchre-tournament-dd9a4.web.app`, deployed from a single static file at `public/index.html`.
+- Full arc works: Google host sign-in, sign-up lobby (code + join link), seeded/validated rotation with robots, live scoring, standings, results with the KLASK Champion badge, end-early, CSV/JSON export, a cloud archive that follows your login, 18 imported historical events, and a public "KLASK history" list anyone can browse without signing in.
+- Code is on GitHub. **Deploys are now automatic** via GitHub Actions: push/merge to `main` ships to the live site; every PR gets a preview URL. `firebase deploy` still works as a manual fallback.
+- Security model: no player accounts (join by code); host is identity-based; Firestore rules enforce that only the owner can change structure, while anyone with a code can check in and enter scores. Tournament *listing* is now public (read-only).
+- ~~**Open item:** the host archive occasionally threw `permission-denied`.~~ **Resolved (2026-07-09)** by making the Firestore `list` rule public — cold loads and Back-navigations no longer depend on the host's token being ready. The old retry/backoff scaffolding has been removed.
 
 ---
 
-## Do this first — Public family archive (+ fixes the archive bug)
+## ✅ Done (2026-07-09) — Public family archive (+ fixed the archive bug)
 
-Kim wants the whole family to see past results, and decided the data being publicly readable is fine (it's first names and euchre scores). This is the recommended next task because it does double duty: it delivers the family archive **and** removes the token-timing fragility above.
+**Shipped.** Kim wanted the whole family to see past results and decided public-readable data is fine (first names and euchre scores). This did double duty: it delivered the family archive **and** removed the token-timing fragility at the root.
+
+*What shipped:* the Firestore `list` rule was opened to public in the console; a public "KLASK history" section was added to the landing screen (no sign-in, read-only); and the archive retry/backoff scaffolding was deleted. Verified live: an unauthenticated list of the `tournaments` collection returns data, and the deployed site serves the new code. Kim accepted the tradeoff that anyone with the app URL can list all tournaments (first names + scores); unguessable codes still protect individual events.
+
+*Original notes, kept for reference:*
 
 **Why it fixes the bug:** the `permission-denied` came from the `list` rule requiring `request.auth` to be valid at query time. Make listing public and the read no longer depends on the host's token being ready — so cold loads and Back-navigations can't be denied.
 
@@ -40,7 +44,7 @@ allow delete: if request.auth != null && resource.data.ownerUid == request.auth.
 
 Roughly ordered by value. Only the first is more than cosmetic.
 
-1. **Archive pagination.** The one genuinely useful item. "Your tournaments" (and the new public history list) fetches every tournament on each load; with 18 imported plus every future night, that list will get heavy. The clean version: query the newest ~10, show a "Load more," page back by `createdAt` with a cursor (Firestore `limit()` + `startAfter()`). Do this once the list actually feels long.
+1. **Archive pagination.** The one genuinely useful item — and now **half-built**. Both lists ("Your tournaments" and the public KLASK history) share "Load more" scaffolding, but it's a **stub**: `hasMore` is hardcoded `false` and the Firestore `limit()`/`startAfter()` cursor is imported but never called, so it still fetches every tournament in one query. Finishing it: query the newest ~10, wire the cursor into "Load more," page back by `createdAt`. Do this once the list actually feels long (18 imported plus every future night).
 
 2. **Robot naming.** Let the host rename the padding bots (your "BMO," etc.) instead of "Robot 1/2." Small: an editable label per robot at generate time, carried into the rotation and standings.
 
@@ -61,6 +65,10 @@ The app is a good teaching prop *because* it's simple: one static file, no build
 ### Prereqs (already done)
 - Repo on GitHub. ✓
 - Firebase Hosting project. ✓
+
+### Progress (2026-07-09)
+- **Stage 2 (PR previews) & Stage 4 (CD on merge) — ✅ done.** `firebase init hosting:github` was run, which scaffolded both workflows in `.github/workflows/` and created the `FIREBASE_SERVICE_ACCOUNT_*` GitHub secret. The auto-generated `npm ci && npm run build` step was wrong for this no-build static site (it failed at `npm ci`); removing that one line made both workflows work. Merge to `main` now auto-deploys to production (verified green), and PRs get preview channels (untested until the first real PR).
+- **Still open: Stage 1 & Stage 3.** There is currently **no test/lint gate** — broken JS can deploy. Stage 1 (the `node --check` gate) and Stage 3 (branch protection requiring it) are the remaining real CI work, and are now the highest-value CI/CD items.
 
 ### Stage 1 — CI gate before anything ships (smallest real slice)
 Add a workflow that runs on every push and *checks something* — formalizing the `node --check` syntax check we've run by hand all along. This teaches workflow files, triggers, and jobs, and instills the "gate before you ship" instinct that is the heart of CI.
@@ -109,4 +117,9 @@ The Firebase service-account key lives as a GitHub Actions **secret**, never in 
 
 ## Suggested resume point
 
-Start with **the public family archive** (top of this doc). It's what Kim asked for next, it's a small change, and it's expected to resolve the lingering archive `permission-denied` at the root — after which the retry scaffolding can come out. After that, the highest-value polish item is **archive pagination**, and the best first CI/CD step is **Stage 1** (the `node --check` gate you've already watched pass a dozen times). Each is a clean, self-contained session.
+The public family archive is **shipped** and CI/CD auto-deploy is **live**, so the top of the old list is done. The two cleanest next sessions:
+
+1. **Finish archive pagination** (Track 1 #1) — the scaffolding is already in place but stubbed; wire up the `limit()`/`startAfter()` cursor and flip `hasMore`. Highest-value polish item.
+2. **CI/CD Stage 1** — add the `node --check` syntax gate so a broken build can't auto-deploy (right now nothing stops it), then **Stage 3** branch protection to require it before merge. This is the missing "gate" half of CI/CD.
+
+Each is a clean, self-contained session.
