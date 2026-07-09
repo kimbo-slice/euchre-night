@@ -140,7 +140,7 @@
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
   import { initializeFirestore, persistentLocalCache,
     doc, setDoc, updateDoc, deleteDoc, onSnapshot, arrayUnion, arrayRemove, serverTimestamp,
-    collection, query, where, getDocs }
+    collection, query, where, getDocs, orderBy, limit, startAfter }
     from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
   import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut }
     from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
@@ -387,30 +387,27 @@
     renderArchive();
     renderPublicHistory();
   }
-  async function fetchMine(){
-    if(auth.authStateReady){ try{ await auth.authStateReady(); }catch(e){} }
-    if(auth.currentUser){ try{ await auth.currentUser.getIdToken(); }catch(e){} }
-    var snap=await getDocs(query(collection(db,"tournaments"), where("ownerUid","==",user.uid)));
-    var items=[]; snap.forEach(function(dd){ var o=dd.data(); o.code=dd.id; items.push(o); });
-    items.sort(function(a,b){ var ta=(a.createdAt&&a.createdAt.seconds)||0, tb=(b.createdAt&&b.createdAt.seconds)||0; return tb-ta; });
-    return items;
+  // ---------- paginated lists ----------
+  var PAGE=10;
+  function makeState(){ return { items:[], cursor:null, hasMore:false, loading:false, loadedAt:0 }; }
+  function resetState(s){ s.items=[]; s.cursor=null; s.hasMore=false; s.loading=false; s.loadedAt=0; }
+  var pubState=makeState(), mineState=makeState();
+  function pubQuery(){ return query(collection(db,"tournaments"), where("status","==","final")); }
+  function mineQuery(){ return query(collection(db,"tournaments"), where("ownerUid","==",user.uid)); }
+  async function loadPage(state, qbuilder, append){
+    if(state.loading) return;
+    state.loading=true;
+    try{
+      var snap=await getDocs(qbuilder());
+      var items=snap.docs.map(function(d){ var o=d.data(); o.code=d.id; return o; });
+      items.sort(function(a,b){ var ta=(a.createdAt&&a.createdAt.seconds)||0, tb=(b.createdAt&&b.createdAt.seconds)||0; return tb-ta; });
+      state.items=items; state.hasMore=false; state.cursor=null; state.loadedAt=Date.now();
+    } finally { state.loading=false; }
   }
-  async function loadMine(attempt){
-    attempt=attempt||0;
-    try{ return await fetchMine(); }
-    catch(e){
-      if(e.code==="permission-denied" && attempt<3){
-        await new Promise(function(r){ setTimeout(r, 400*Math.pow(2,attempt)); });
-        if(auth.currentUser){ try{ await auth.currentUser.getIdToken(true); }catch(_){} }
-        return loadMine(attempt+1);
-      }
-      throw e;
-    }
-  }
-  function paintList(box, items, title){
-    if(!items.length){ box.innerHTML=""; return; }
+  function paintList(box, state, title, onMore){
+    if(!state.items.length){ box.innerHTML=""; return; }
     var html='<div class="hist-h">'+esc(title)+'</div><div class="card"><span class="pip">\u2660</span>';
-    items.forEach(function(d){
+    state.items.forEach(function(d){
       var label=d.status==="final"?"Final":(d.status==="active"?"In progress":"Sign-up");
       var n=(d.players||[]).length, extra=n+" player"+(n===1?"":"s");
       if(d.status==="final"&&((d.roster&&d.rotation)||(d.imported&&d.standings))){ var w=winnerName(d); if(w) extra="\u265A "+w; }
@@ -420,34 +417,33 @@
         '<div><div class="hn">'+esc(d.name||"Euchre Night")+'</div><div class="hmeta">'+metaText+'</div></div>'+
         '<div style="display:flex;align-items:center;gap:10px"><span class="hstatus '+d.status+'">'+label+'</span><span class="chev">\u203A</span></div></div>';
     });
-    box.innerHTML=html+'</div>';
+    html+='</div>';
+    if(state.hasMore){ html+='<button class="btn ghost small" data-more="1" style="width:100%;margin-top:6px"'+(state.loading?" disabled":"")+'>'+(state.loading?"Loading\u2026":"Load more")+'</button>'; }
+    box.innerHTML=html;
     Array.prototype.forEach.call(box.querySelectorAll(".hist-row"),function(row){
       var open=function(){ location.href="?t="+encodeURIComponent(row.dataset.code); };
       row.onclick=open; row.onkeydown=function(ev){ if(ev.key==="Enter"||ev.key===" "){ ev.preventDefault(); open(); } };
     });
+    var mb=box.querySelector('[data-more]'); if(mb && onMore) mb.onclick=onMore;
   }
-  var pubCache=null, pubAt=0;
   async function renderPublicHistory(force){
     var box=document.getElementById("pubhistory"); if(!box) return;
-    if(pubCache){ paintList(box, pubCache, "KLASK history"); }
-    else { box.innerHTML='<div class="hist-h">KLASK history</div><div class="card"><p class="empty" style="padding:24px 0">Loading\u2026</p></div>'; }
-    if(pubCache && !force && (Date.now()-pubAt < 30000)) return; // fresh enough
-    try{
-      var snap=await getDocs(collection(db,"tournaments"));
-      var items=[]; snap.forEach(function(dd){ var o=dd.data(); if(o.status==="final"){ o.code=dd.id; items.push(o); } });
-      items.sort(function(a,b){ var ta=(a.createdAt&&a.createdAt.seconds)||0, tb=(b.createdAt&&b.createdAt.seconds)||0; return tb-ta; });
-      pubCache=items; pubAt=Date.now();
-      var box2=document.getElementById("pubhistory"); if(box2) paintList(box2, items, "KLASK history");
-    }catch(e){ if(!pubCache){ var b=document.getElementById("pubhistory"); if(b) b.innerHTML='<div class="hist-h">KLASK history</div><div class="card"><p class="muted">Couldn\u2019t load history ('+esc(e.code||e.message)+').</p></div>'; } }
+    var repaint=function(){ var b=document.getElementById("pubhistory"); if(b) paintList(b, pubState, "KLASK history", onMore); };
+    var onMore=function(){ if(pubState.loading||!pubState.hasMore) return; var p=loadPage(pubState, pubQuery, true); repaint(); p.then(repaint).catch(function(e){ toast(e.code||"Couldn\u2019t load more"); }); };
+    if(pubState.items.length && !force){ repaint(); return; }
+    box.innerHTML='<div class="hist-h">KLASK history</div><div class="card"><p class="empty" style="padding:24px 0">Loading\u2026</p></div>';
+    try{ await loadPage(pubState, pubQuery, false); repaint(); }
+    catch(e){ box.innerHTML='<div class="hist-h">KLASK history</div><div class="card"><p class="muted">Couldn\u2019t load history ('+esc(e.code||e.message)+').</p></div>'; }
   }
   async function renderArchive(){
     var box=document.getElementById("archive"); if(!box) return;
     if(!user){ box.innerHTML=""; return; }
+    var repaint=function(){ var b=document.getElementById("archive"); if(b) paintList(b, mineState, "Your tournaments", onMore); };
+    var onMore=function(){ if(mineState.loading||!mineState.hasMore) return; var p=loadPage(mineState, mineQuery, true); repaint(); p.then(repaint).catch(function(e){ toast(e.code||"Couldn\u2019t load more"); }); };
     box.innerHTML='<div class="hist-h">Your tournaments</div><div class="card"><p class="empty" style="padding:24px 0">Loading\u2026</p></div>';
-    try{
-      var items=await loadMine(0);
-      paintList(box, items, "Your tournaments");
-    }catch(e){
+    resetState(mineState);
+    try{ await loadPage(mineState, mineQuery, false); repaint(); }
+    catch(e){
       box.innerHTML='<div class="hist-h">Your tournaments</div><div class="card"><p class="muted">Couldn\u2019t load your list ('+esc(e.code||e.message)+').</p>'+
         '<button class="btn ghost small" id="retryarch" style="margin-top:12px">Retry</button></div>';
       var rb=document.getElementById("retryarch"); if(rb) rb.onclick=function(){ renderArchive(); };
