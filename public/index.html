@@ -300,7 +300,7 @@
     for(var i=0;i<HISTORY.length;i++){
       var h=HISTORY[i];
       try{
-        await setDoc(doc(db,"tournaments",h.id),{ name:h.name, status:"final", ownerUid:user.uid, imported:true,
+        await createTournamentDoc(h.id,{ name:h.name, status:"final", ownerUid:user.uid, imported:true,
           standings:h.standings, players:h.standings.map(function(s){return {id:genToken(),name:s.name};}),
           createdAt:new Date(Date.UTC(2019,0,1)+ (HISTORY.length-i)*86400000) });
         ok++;
@@ -310,6 +310,13 @@
   }
 
   // ---------- firebase actions ----------
+  // Guard: every tournament doc MUST carry createdAt, or orderBy("createdAt")
+  // silently drops it from the archive lists. Route all creation through here
+  // so no path can forget it. Callers may pass their own createdAt (imports).
+  function createTournamentDoc(id, data){
+    if(!("createdAt" in data)) data.createdAt=serverTimestamp();
+    return setDoc(doc(db,"tournaments",id), data);
+  }
   async function createTournament(){
     if(!user){ toast("Sign in to host"); return; }
     var btn=document.getElementById("create");
@@ -317,7 +324,7 @@
     btn.disabled=true; btn.textContent="Creating\u2026";
     var c=genCode();
     try{
-      await setDoc(doc(db,"tournaments",c),{ name:name, status:"signup", createdAt:serverTimestamp(), ownerUid:user.uid, players:[] });
+      await createTournamentDoc(c,{ name:name, status:"signup", ownerUid:user.uid, players:[] });
       location.href="?t="+c;
     }catch(e){ btn.disabled=false; btn.textContent="Create tournament"; setConn("err","Error");
       appEl.insertAdjacentHTML("afterbegin",'<div class="card" style="border-color:var(--red)"><b>Couldn\u2019t create the tournament.</b><br><span class="muted">'+esc(e.code||e.message||"Unknown")+'. Usually the security rules aren\u2019t published yet.</span></div>'); }
@@ -392,16 +399,30 @@
   function makeState(){ return { items:[], cursor:null, hasMore:false, loading:false, loadedAt:0 }; }
   function resetState(s){ s.items=[]; s.cursor=null; s.hasMore=false; s.loading=false; s.loadedAt=0; }
   var pubState=makeState(), mineState=makeState();
-  function pubQuery(){ return query(collection(db,"tournaments"), where("status","==","final")); }
-  function mineQuery(){ return query(collection(db,"tournaments"), where("ownerUid","==",user.uid)); }
+  function pubQuery(cursor){
+    var c=[collection(db,"tournaments"), where("status","==","final"), orderBy("createdAt","desc")];
+    if(cursor) c.push(startAfter(cursor));
+    c.push(limit(PAGE));
+    return query.apply(null,c);
+  }
+  function mineQuery(cursor){
+    var c=[collection(db,"tournaments"), where("ownerUid","==",user.uid), orderBy("createdAt","desc")];
+    if(cursor) c.push(startAfter(cursor));
+    c.push(limit(PAGE));
+    return query.apply(null,c);
+  }
   async function loadPage(state, qbuilder, append){
     if(state.loading) return;
     state.loading=true;
     try{
-      var snap=await getDocs(qbuilder());
+      // Server orders by createdAt desc; pages stay ordered as we concat them.
+      var snap=await getDocs(qbuilder(append?state.cursor:null));
       var items=snap.docs.map(function(d){ var o=d.data(); o.code=d.id; return o; });
-      items.sort(function(a,b){ var ta=(a.createdAt&&a.createdAt.seconds)||0, tb=(b.createdAt&&b.createdAt.seconds)||0; return tb-ta; });
-      state.items=items; state.hasMore=false; state.cursor=null; state.loadedAt=Date.now();
+      state.items = append ? state.items.concat(items) : items;
+      if(snap.docs.length) state.cursor=snap.docs[snap.docs.length-1];
+      else if(!append) state.cursor=null;
+      state.hasMore = snap.docs.length===PAGE;
+      state.loadedAt=Date.now();
     } finally { state.loading=false; }
   }
   function paintList(box, state, title, onMore){
