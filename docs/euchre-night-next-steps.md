@@ -44,7 +44,7 @@ allow delete: if request.auth != null && resource.data.ownerUid == request.auth.
 
 Roughly ordered by value. Only the first is more than cosmetic.
 
-1. **Archive pagination.** The one genuinely useful item — and now **half-built**. Both lists ("Your tournaments" and the public KLASK history) share "Load more" scaffolding, but it's a **stub**: `hasMore` is hardcoded `false` and the Firestore `limit()`/`startAfter()` cursor is imported but never called, so it still fetches every tournament in one query. Finishing it: query the newest ~10, wire the cursor into "Load more," page back by `createdAt`. Do this once the list actually feels long (18 imported plus every future night).
+1. ~~**Archive pagination.**~~ **✅ Done (2026-07-09).** Both lists now query the newest 10 by `createdAt desc` with a `startAfter` cursor and a working "Load more" (`PAGE=10`, `limit()` + `startAfter()`). Two composite indexes back it (`status+createdAt`, `ownerUid+createdAt`), defined in `firestore.indexes.json` and deployed. All doc creation routes through `createTournamentDoc()`, which guarantees `createdAt` so `orderBy` can never silently drop a row. Verified against production: page 1 = 10 (hasMore), page 2 = 9 (cursor, no overlap), 19 distinct total. *Note:* each list row still fetches the tournament's full payload (roster/rotation/scores) just to show a name+winner — the deeper scalability fix is a lightweight summary doc, deferred as overkill for now.
 
 2. **Robot naming.** Let the host rename the padding bots (your "BMO," etc.) instead of "Robot 1/2." Small: an editable label per robot at generate time, carried into the rotation and standings.
 
@@ -117,9 +117,8 @@ The Firebase service-account key lives as a GitHub Actions **secret**, never in 
 
 ## Suggested resume point
 
-The public family archive is **shipped** and CI/CD auto-deploy is **live**, so the top of the old list is done. The two cleanest next sessions:
+The public family archive is **shipped**, CI/CD auto-deploy is **live**, and archive pagination is **done** — so the top polish items are cleared. The cleanest next session:
 
-1. **Finish archive pagination** (Track 1 #1) — the scaffolding is already in place but stubbed; wire up the `limit()`/`startAfter()` cursor and flip `hasMore`. Highest-value polish item.
-2. **CI/CD Stage 1** — add the `node --check` syntax gate so a broken build can't auto-deploy (right now nothing stops it), then **Stage 3** branch protection to require it before merge. This is the missing "gate" half of CI/CD.
+- **CI/CD Stage 1** — add the `node --check` syntax gate so a broken build can't auto-deploy (right now nothing stops it), then **Stage 3** branch protection to require it before merge. This is the missing "gate" half of CI/CD, and the highest-value remaining item.
 
-Each is a clean, self-contained session.
+After that it's optional polish (Track 1 #2–6: robot naming, reuse-last-roster, co-hosts, themes, real import dates). Each is a clean, self-contained session.
